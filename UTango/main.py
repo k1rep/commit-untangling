@@ -168,6 +168,14 @@ def train(epochs, trainLoader, testLoader, model, learning_rate):
         evaluate_metrics(model=model, test_loader=testLoader)
 
 
+def demo_work(dataset):
+    model_ = torch.load("model.pt")
+    test_dataset = dataset
+    sleep(0.1)
+    evaluate_metrics(model=model_, test_loader=test_dataset)
+    print("Among the demo dataset, the results are shown above")
+
+
 if __name__ == '__main__':
     dataset = []
     for i in range(30):
