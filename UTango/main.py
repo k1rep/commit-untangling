@@ -5,13 +5,44 @@ from time import sleep
 import torch
 from sklearn.metrics import accuracy_score
 from torch import nn
-from torch_geometric.data import Data
+from torch.utils.data import IterableDataset
+from torch_geometric.data import Data, Batch
+from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 import model
 import os.path as osp
 import os
 import copy
 import numpy as np
+
+
+class AdaptiveBatchSampler(IterableDataset):
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        batch = []
+        labels_batch = []
+        for data in self.dataset:
+            if isinstance(data, Data):
+                batch.append(data)
+            elif isinstance(data, list):
+                labels_batch.append(data)
+                if batch:
+                    yield batch, labels_batch
+                    batch, labels_batch = [], []
+            if len(batch) >= self.batch_size:
+                yield batch, labels_batch
+                batch, labels_batch = [], []
+        if batch:
+            yield batch, labels_batch
+
+
+def custom_collate_fn(batch):
+    data_list, labels_list = batch
+    batch_data = Batch.from_data_list(data_list)
+    return batch_data, labels_list
 
 
 def start_training(dataset):
@@ -21,8 +52,16 @@ def start_training(dataset):
     train_dataset = dataset[:train_size]
     # Change based on your data split, if you want to have a validate set, you can also setup a validation set for it.
     test_dataset = dataset[train_size:]
+    # 去掉train_set的外层list
+    train_dataset = [item for sublist in train_dataset for item in sublist]
+    # 去掉test_set的外层list
+    test_dataset = [item for sublist in test_dataset for item in sublist]
+    train_sampler = AdaptiveBatchSampler(train_dataset, batch_size=len(train_dataset))
+    test_sampler = AdaptiveBatchSampler(test_dataset, batch_size=len(test_dataset))
+    train_loader = DataLoader(train_sampler, shuffle=False, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_sampler, shuffle=False, collate_fn=custom_collate_fn)
     model_ = model.UTango(h_size=128, max_context=5, drop_out_rate=0.5, gcn_layers=3)
-    train(epochs=1, trainLoader=train_dataset, testLoader=test_dataset, model=model_, learning_rate=1e-4)
+    train(epochs=1, trainLoader=train_loader, testLoader=test_loader, model=model_, learning_rate=1e-4)
 
 
 def evaluate_metrics(model, test_loader):
@@ -77,20 +116,14 @@ def loop_check(label_tuple, input_tuple):
         return [[[input_list[0], label_list[0]]]]
 
     set_pairs = []
-    for perm in permutations(input_list, len(label_list)):
-        pair = list(zip(perm, label_list))
-        set_pairs.append(pair)
-
-    # 保持唯一性
-    unique_set_pairs = []
     seen = set()
-    for pair in set_pairs:
-        sorted_pair = tuple(sorted(pair))
-        if sorted_pair not in seen:
-            seen.add(sorted_pair)
-            unique_set_pairs.append([list(p) for p in pair])
+    for perm in permutations(input_list, len(label_list)):
+        pair = tuple(sorted(zip(perm, label_list)))
+        if pair not in seen:
+            seen.add(pair)
+            set_pairs.append([list(p) for p in zip(perm, label_list)])
 
-    return unique_set_pairs
+    return set_pairs
 
 
 def data_reformat(input_data, label):
@@ -124,18 +157,14 @@ def train(epochs, trainLoader, testLoader, model, learning_rate):
         for e in range(epochs):
             model.train()  # 将模型设置为训练模式
             print(f"Epoch {e + 1}/{epochs}")
-            for index, _data in enumerate(tqdm(trainLoader, leave=False)):
-                data_set = [
-                    data.to(device) if isinstance(data, Data) else Data(
-                        x=torch.tensor(data.x, dtype=torch.int8, device=device),
-                        edge_index=torch.tensor(data.edge_index, dtype=torch.int8, device=device),
-                        y=torch.tensor(data.y, dtype=torch.int8, device=device)
-                    )
-                    for data in _data[:-1]
-                ]
+            for index, (_data, labels) in enumerate(tqdm(trainLoader, leave=False)):
+                if isinstance(_data, list):
+                    _data = [item.to(device) for item in _data]
+                else:
+                    _data = _data.to(device)
                 optimizer.zero_grad()
-                out = model(data_set)
-                y_ = _data[-1]
+                out = model(_data)
+                y_ = labels
                 if isinstance(y_, list):
                     y_ = [item.to(device) if isinstance(item, torch.Tensor) else torch.tensor(item, device=device) for
                           item in y_]
@@ -178,7 +207,7 @@ def demo_work(dataset):
 
 if __name__ == '__main__':
     dataset = []
-    for i in range(30):
+    for i in range(5):
         # Change based on your dataset size.
         data = torch.load(osp.join(os.getcwd() + "/data/", 'data_{}.pt'.format(i)))
         dataset.append(data)

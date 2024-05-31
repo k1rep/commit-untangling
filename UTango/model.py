@@ -39,9 +39,11 @@ class UTango(torch.nn.Module):
                     for j in range(self.max_context):
                         if j < len(node_label[i]):
                             context_vec.append(feature_vec[node_label[i][j]])
+                            print(len(context_vec))
                         else:
                             context_vec.append(torch.zeros(self.h_size, device=device))
-                    context_vec = torch.concat(context_vec)
+                            print(len(context_vec))
+                    context_vec = torch.stack(context_vec).view(-1)
                     context_vec = self.resize(context_vec)
                     rep_vec = torch.reshape(feature_vec[i], (-1,)) * context_vec
                     output.append(rep_vec)
