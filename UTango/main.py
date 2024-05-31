@@ -2,6 +2,7 @@ import random
 from itertools import permutations
 from time import sleep
 
+import numpy
 import torch
 from sklearn.metrics import accuracy_score
 from torch import nn
@@ -58,8 +59,8 @@ def start_training(dataset):
     test_dataset = [item for sublist in test_dataset for item in sublist]
     train_sampler = AdaptiveBatchSampler(train_dataset, batch_size=len(train_dataset))
     test_sampler = AdaptiveBatchSampler(test_dataset, batch_size=len(test_dataset))
-    train_loader = DataLoader(train_sampler, shuffle=False, collate_fn=custom_collate_fn)
-    test_loader = DataLoader(test_sampler, shuffle=False, collate_fn=custom_collate_fn)
+    train_loader = DataLoader(train_sampler, shuffle=False, num_workers=10, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_sampler, shuffle=False, num_workers=10, collate_fn=custom_collate_fn)
     model_ = model.UTango(h_size=128, max_context=5, drop_out_rate=0.5, gcn_layers=3)
     train(epochs=1, trainLoader=train_loader, testLoader=test_loader, model=model_, learning_rate=1e-4)
 
@@ -89,10 +90,11 @@ def evaluate_metrics(model, test_loader):
 def loop_calculation(input_1, input_2):
     out_ = []
     input_set = set(input_1)
+    input_2 = np.array([data[0] for data in input_2])
     label_set = set(input_2)
     pairs = loop_check(tuple(sorted(label_set)), tuple(sorted(input_set)))
     for pair in pairs:
-        tem_input = copy.deepcopy(input_1)
+        tem_input = list(copy.deepcopy(input_1))
         changed = np.zeros(len(tem_input))
         for pair_info in pair:
             original_label = pair_info[0]
@@ -103,7 +105,7 @@ def loop_calculation(input_1, input_2):
                     changed[i] = 1
         for i in range(len(changed)):
             if changed[i] == 0:
-                tem_input[i] = 0
+                tem_input[i] = (0, )
         out_.append(tem_input)
     return out_
 
@@ -164,34 +166,19 @@ def train(epochs, trainLoader, testLoader, model, learning_rate):
                     _data = _data.to(device)
                 optimizer.zero_grad()
                 out = model(_data)
-                y_ = labels
-                if isinstance(y_, list):
-                    y_ = [item.to(device) if isinstance(item, torch.Tensor) else torch.tensor(item, device=device) for
-                          item in y_]
-                else:
-                    y_ = y_.to(device)
-
+                y_ = labels[0]
                 total_loss = torch.tensor(0.0, device=device, requires_grad=True)
                 for i in range(len(out)):
-                    y_i = y_[i] if isinstance(y_[i], torch.Tensor) else torch.tensor(y_[i], device=device)
-                    loop_set = loop_calculation(out[i], y_i.cpu().numpy())
-                    min_loss = None
-                    for data_setting in loop_set:
-                        temp_loss = criterion(
-                            torch.tensor(data_reformat(data_setting, y_i.cpu().numpy()), dtype=torch.float,
-                                         device=device),
-                            y_i
-                        )
-                        if min_loss is None or temp_loss < min_loss:
-                            min_loss = temp_loss
-                    if min_loss is not None:
-                        total_loss = total_loss + min_loss
+                    loop_set = loop_calculation(out[i], numpy.array(y_[i]))
+                    min_loss = min(criterion(torch.tensor(data_reformat(ls, y_[i]), dtype=torch.float, device=device),
+                                             torch.tensor(y_[i], dtype=torch.long, device=device))
+                                   for ls in loop_set)
+                    total_loss = total_loss + min_loss
                 total_loss.backward()
                 optimizer.step()
                 if index % 20 == 0:
-                    print('epoch: {}, batch: {}, loss: {}'.format(e + 1, index + 1, total_loss.item()))
+                    print(f'epoch: {e + 1}, batch: {index + 1}, loss: {total_loss.item()}')
             torch.save(model.state_dict(), os.path.join('model', f"model_{e + 1}.pt"))
-
         evaluate_metrics(model=model, test_loader=testLoader)
     except KeyboardInterrupt:
         evaluate_metrics(model=model, test_loader=testLoader)

@@ -23,7 +23,7 @@ class UTango(torch.nn.Module):
         for data in input_data:
             device = data.x.device
             node_features = data.x.to(device)
-            node_label = data.y
+            node_label = data.y[0]
             edge_info = data.edge_index.to(device)
 
             for i in range(self.gcn_layers - 1):
@@ -39,11 +39,9 @@ class UTango(torch.nn.Module):
                     for j in range(self.max_context):
                         if j < len(node_label[i]):
                             context_vec.append(feature_vec[node_label[i][j]])
-                            print(len(context_vec))
                         else:
-                            context_vec.append(torch.zeros(self.h_size, device=device))
-                            print(len(context_vec))
-                    context_vec = torch.stack(context_vec).view(-1)
+                            context_vec.append(torch.zeros(self.h_size).to(device))
+                    context_vec = torch.concat(context_vec)
                     context_vec = self.resize(context_vec)
                     rep_vec = torch.reshape(feature_vec[i], (-1,)) * context_vec
                     output.append(rep_vec)
