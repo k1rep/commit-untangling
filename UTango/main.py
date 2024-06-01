@@ -39,6 +39,9 @@ class AdaptiveBatchSampler(IterableDataset):
         if batch:
             yield batch, labels_batch
 
+    def __len__(self):
+        return len(self.dataset)
+
 
 def custom_collate_fn(batch):
     data_list, labels_list = batch
@@ -59,24 +62,33 @@ def start_training(dataset):
     test_dataset = [item for sublist in test_dataset for item in sublist]
     train_sampler = AdaptiveBatchSampler(train_dataset, batch_size=len(train_dataset))
     test_sampler = AdaptiveBatchSampler(test_dataset, batch_size=len(test_dataset))
-    train_loader = DataLoader(train_sampler, shuffle=False, num_workers=10, collate_fn=custom_collate_fn)
-    test_loader = DataLoader(test_sampler, shuffle=False, num_workers=10, collate_fn=custom_collate_fn)
-    model_ = model.UTango(h_size=128, max_context=5, drop_out_rate=0.5, gcn_layers=3)
+    train_loader = DataLoader(train_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
+    model_ = model.UTango(h_size=128, max_context=2, drop_out_rate=0.5, gcn_layers=3)
     train(epochs=1, trainLoader=train_loader, testLoader=test_loader, model=model_, learning_rate=1e-4)
 
 
 def evaluate_metrics(model, test_loader):
     model.eval()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     with torch.no_grad():
         acc = 0
-        for data in tqdm(test_loader):
-            out = model(data[:-1])
+        for _data, labels in tqdm(test_loader):
+            if isinstance(_data, list):
+                _data = [item.to(device) for item in _data]
+            else:
+                _data = _data.to(device)
+            out = model(_data)
+            y_ = labels[0]
             temp_acc = 0
             for i in range(len(out)):
-                loop_set = loop_calculation(out[i], data[-1][i])
+                y_i = numpy.array([data[0] for data in y_[i]], dtype=np.int64)
+                if len(out[i]) != len(y_i):
+                    out[i] = out[i][:len(y_i)]
+                loop_set = loop_calculation(out[i], y_i)
                 max_acc = -999
                 for pos_ in loop_set:
-                    tmp_acc = accuracy_score(pos_, data[-1][i])
+                    tmp_acc = accuracy_score(pos_, y_i)
                     if tmp_acc > max_acc:
                         max_acc = tmp_acc
                 temp_acc += max_acc
@@ -90,11 +102,10 @@ def evaluate_metrics(model, test_loader):
 def loop_calculation(input_1, input_2):
     out_ = []
     input_set = set(input_1)
-    input_2 = np.array([data[0] for data in input_2])
     label_set = set(input_2)
     pairs = loop_check(tuple(sorted(label_set)), tuple(sorted(input_set)))
     for pair in pairs:
-        tem_input = list(copy.deepcopy(input_1))
+        tem_input = list(input_1)
         changed = np.zeros(len(tem_input))
         for pair_info in pair:
             original_label = pair_info[0]
@@ -105,7 +116,7 @@ def loop_calculation(input_1, input_2):
                     changed[i] = 1
         for i in range(len(changed)):
             if changed[i] == 0:
-                tem_input[i] = (0, )
+                tem_input[i] = 0
         out_.append(tem_input)
     return out_
 
@@ -169,9 +180,12 @@ def train(epochs, trainLoader, testLoader, model, learning_rate):
                 y_ = labels[0]
                 total_loss = torch.tensor(0.0, device=device, requires_grad=True)
                 for i in range(len(out)):
-                    loop_set = loop_calculation(out[i], numpy.array(y_[i]))
-                    min_loss = min(criterion(torch.tensor(data_reformat(ls, y_[i]), dtype=torch.float, device=device),
-                                             torch.tensor(y_[i], dtype=torch.long, device=device))
+                    y_i = numpy.array([data[0] for data in y_[i]], dtype=np.int64)
+                    if len(out[i]) != len(y_i):
+                        out[i] = out[i][:len(y_i)]
+                    loop_set = loop_calculation(out[i], y_i)
+                    min_loss = min(criterion(torch.tensor(data_reformat(ls, y_i), dtype=torch.float, device=device),
+                                             torch.tensor(y_i, dtype=torch.long, device=device))
                                    for ls in loop_set)
                     total_loss = total_loss + min_loss
                 total_loss.backward()
@@ -194,7 +208,7 @@ def demo_work(dataset):
 
 if __name__ == '__main__':
     dataset = []
-    for i in range(5):
+    for i in range(2):
         # Change based on your dataset size.
         data = torch.load(osp.join(os.getcwd() + "/data/", 'data_{}.pt'.format(i)))
         dataset.append(data)
