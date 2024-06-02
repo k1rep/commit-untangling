@@ -44,17 +44,13 @@ class UTango(torch.nn.Module):
                     context_vec = torch.concat(context_vec)
                     context_vec = self.resize(context_vec)
                     rep_vec = torch.reshape(feature_vec[i], (-1,)) * context_vec
-                    output.append(rep_vec)
-
-            if len(output) < 2:
-                clu_labels = np.zeros(len(node_label))
+                    output.append(rep_vec.tolist())
+            threshold = torch.sigmoid(self.threshold)
+            clustering = AgglomerativeClustering(distance_threshold=threshold.item(), n_clusters=None)
+            if len(output) == 1:
+                clu_labels = np.zeros(1)
             else:
-                output = torch.stack(output)
-                output = output.cpu()
-                threshold = torch.sigmoid(self.threshold).item()
-                clustering = AgglomerativeClustering(distance_threshold=threshold, n_clusters=None)
-                clustering.fit(output.detach().numpy())
+                clustering.fit(output)
                 clu_labels = clustering.labels_
             pre_clu.append(clu_labels)
         return pre_clu
-

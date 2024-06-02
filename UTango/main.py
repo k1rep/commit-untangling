@@ -1,4 +1,4 @@
-import gc
+import copy
 import random
 from itertools import permutations
 from time import sleep
@@ -52,20 +52,20 @@ def custom_collate_fn(batch):
 def start_training(dataset):
     random.shuffle(dataset)
     # Change based on your data split, if you want to have a validate set, you can also setup a validation set for it.
-    train_size = int(0.8 * len(dataset))
+    train_size = int(0.6 * len(dataset))
     train_dataset = dataset[:train_size]
     # Change based on your data split, if you want to have a validate set, you can also setup a validation set for it.
     test_dataset = dataset[train_size:]
     # 去掉train_set的外层list
-    train_dataset = [item for sublist in train_dataset for item in sublist]
+    # train_dataset = [item for sublist in train_dataset for item in sublist]
     # 去掉test_set的外层list
-    test_dataset = [item for sublist in test_dataset for item in sublist]
-    train_sampler = AdaptiveBatchSampler(train_dataset, batch_size=len(train_dataset))
-    test_sampler = AdaptiveBatchSampler(test_dataset, batch_size=len(test_dataset))
-    train_loader = DataLoader(train_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
-    test_loader = DataLoader(test_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
-    model_ = model.UTango(h_size=128, max_context=2, drop_out_rate=0.5, gcn_layers=3)
-    train(epochs=1, trainLoader=train_loader, testLoader=test_loader, model=model_, learning_rate=1e-4)
+    # test_dataset = [item for sublist in test_dataset for item in sublist]
+    # train_sampler = AdaptiveBatchSampler(train_dataset, batch_size=len(train_dataset))
+    # test_sampler = AdaptiveBatchSampler(test_dataset, batch_size=len(test_dataset))
+    # train_loader = DataLoader(train_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
+    # test_loader = DataLoader(test_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
+    model_ = model.UTango(h_size=128, max_context=5, drop_out_rate=0.5, gcn_layers=3)
+    train(epochs=1, trainLoader=train_dataset, testLoader=test_dataset, model=model_, learning_rate=1e-4)
 
 
 def train_on_single_dataset(dataset, i):
@@ -86,6 +86,28 @@ def train_on_single_dataset(dataset, i):
 
 
 def evaluate_metrics(model, test_loader):
+    model.eval()
+    with torch.no_grad():
+        acc = 0
+        for data in tqdm(test_loader):
+            out = model(data[:-1])
+            temp_acc = 0
+            for i in range(len(out)):
+                loop_set = loop_calculation(out[i], data[-1][i])
+                max_acc = -999
+                for pos_ in loop_set:
+                    tmp_acc = accuracy_score(pos_, data[-1][i])
+                    if tmp_acc > max_acc:
+                        max_acc = tmp_acc
+                temp_acc += max_acc
+            temp_acc = temp_acc/len(out)
+            acc += temp_acc
+        acc = acc/len(test_loader)
+        sleep(0.1)
+        print("Average Accuracy: ", acc)
+
+
+def evaluate_metrics_on_single(model, test_loader):
     model.eval()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     with torch.no_grad():
@@ -115,12 +137,33 @@ def evaluate_metrics(model, test_loader):
         sleep(0.1)
         print("Average Accuracy: ", acc)
 
-
 def loop_calculation(input_1, input_2):
     out_ = []
     input_set = set(input_1)
     label_set = set(input_2)
-    pairs = loop_check(tuple(sorted(label_set)), tuple(sorted(input_set)))
+    pairs = loop_check(label_set, input_set)
+    for pair in pairs:
+        tem_input = copy.deepcopy(input_1)
+        changed = np.zeros(len(tem_input))
+        for pair_info in pair:
+            original_label = pair_info[0]
+            replace_label = pair_info[1]
+            for i in range(len(tem_input)):
+                if tem_input[i] == original_label and changed[i] == 0:
+                    tem_input[i] = replace_label
+                    changed[i] = 1
+        for i in range(len(changed)):
+            if changed[i] == 0:
+                tem_input[i] = 0
+        out_.append(tem_input)
+    return out_
+
+
+def loop_calculation_on_single(input_1, input_2):
+    out_ = []
+    input_set = set(input_1)
+    label_set = set(input_2)
+    pairs = loop_check_on_single(tuple(sorted(label_set)), tuple(sorted(input_set)))
     for pair in pairs:
         tem_input = list(input_1)
         changed = np.zeros(len(tem_input))
@@ -138,7 +181,34 @@ def loop_calculation(input_1, input_2):
     return out_
 
 
-def loop_check(label_tuple, input_tuple):
+def loop_check(label_set, input_set):
+    set_pairs = []
+    for label in label_set:
+        for input_label in input_set:
+            if len(label_set) > 1 and len(input_set) > 1:
+                a_ = copy.deepcopy(label_set)
+                a_.remove(label)
+                b_ = copy.deepcopy(input_set)
+                b_.remove(input_label)
+                get_pairs = loop_check(a_, b_)
+                for pair in get_pairs:
+                    tmp = pair
+                    tmp.append([input_label, label])
+                    set_pairs.append(tmp)
+            elif len(label_set) == 1 and len(input_set) == 1:
+                return [[[input_label, label]]]
+            else:
+                set_pairs.append([[input_label, label]])
+    for i in range(len(set_pairs)):
+        set_pairs[i].sort()
+    temp = []
+    for item in set_pairs:
+        if item not in temp:
+            temp.append(item)
+    return temp
+
+
+def loop_check_on_single(label_tuple, input_tuple):
     label_list = list(label_tuple)
     input_list = list(input_tuple)
 
@@ -175,6 +245,39 @@ def data_reformat(input_data, label):
 
 
 def train(epochs, trainLoader, testLoader, model, learning_rate):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    model.train()
+    try:
+        for e in range(epochs):
+            for index, _data in enumerate(tqdm(trainLoader, leave=False)):
+                model.train()
+                out = model(_data[:-1])
+                y_ = _data[-1]
+                total_loss = 0
+                for i in range(len(out)):
+                    loop_set = loop_calculation(out[i], y_[i])
+                    min_loss = 999999
+                    for data_setting in loop_set:
+                        temp_loss = criterion(torch.tensor(data_reformat(data_setting, y_[i]), dtype=torch.float), torch.tensor(y_[i]))
+                        if temp_loss < min_loss:
+                            min_loss = temp_loss
+                    total_loss = total_loss + min_loss
+                loss = torch.autograd.Variable(total_loss, requires_grad = True)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                sleep(0.05)
+                if index % 20 == 0:
+                    print('epoch: {}, batch: {}, loss: {}'.format(e + 1, index + 1, loss.data))
+            torch.save(model, os.path.join('model', f"model_{e + 1}.pt"))
+            sleep(0.1)
+        evaluate_metrics(model=model, test_loader=testLoader)
+    except KeyboardInterrupt:
+        evaluate_metrics(model=model, test_loader=testLoader)
+
+
+def train_batch(epochs, trainLoader, testLoader, model, learning_rate):
     if not os.path.exists('model'):
         os.makedirs('model')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -200,7 +303,7 @@ def train(epochs, trainLoader, testLoader, model, learning_rate):
                     y_i = numpy.array([data[0] for data in y_[i]], dtype=np.int64)
                     if len(out[i]) != len(y_i):
                         out[i] = out[i][:len(y_i)]
-                    loop_set = loop_calculation(out[i], y_i)
+                    loop_set = loop_calculation_on_single(out[i], y_i)
                     min_loss = min(criterion(torch.tensor(data_reformat(ls, y_i), dtype=torch.float, device=device),
                                              torch.tensor(y_i, dtype=torch.long, device=device))
                                    for ls in loop_set)
@@ -213,14 +316,6 @@ def train(epochs, trainLoader, testLoader, model, learning_rate):
         evaluate_metrics(model=model, test_loader=testLoader)
     except KeyboardInterrupt:
         evaluate_metrics(model=model, test_loader=testLoader)
-
-
-def demo_work(dataset):
-    model_ = torch.load("model.pt")
-    test_dataset = dataset
-    sleep(0.1)
-    evaluate_metrics(model=model_, test_loader=test_dataset)
-    print("Among the demo dataset, the results are shown above")
 
 
 def train_on_single(epochs, _data, model, learning_rate,
@@ -262,13 +357,13 @@ def demo_work(dataset):
 
 if __name__ == '__main__':
     dataset = []
-    # for i in range(1):
-    #     # Change based on your dataset size.
-    #     data = torch.load(osp.join(os.getcwd() + "/data/", 'data_{}.pt'.format(i)))
-    #     dataset.append(data)
+    for i in range(30):
+        # Change based on your dataset size.
+        data = torch.load(osp.join(os.getcwd() + "/data/", 'data_{}.pt'.format(i)))
+        dataset.append(data)
     # 从data目录下读取所有数据点数
-    data_size = len(os.listdir(os.path.join(os.getcwd() + "/data/")))
-    for i in range(data_size):
-        dataset = torch.load(os.path.join(os.getcwd() + "/data/", f'data_{i}.pt'))
-        train_on_single_dataset(dataset, i)
-    # start_training(dataset)
+    # data_size = len(os.listdir(os.path.join(os.getcwd() + "/data/")))
+    # for i in range(data_size):
+    #     dataset = torch.load(os.path.join(os.getcwd() + "/data/", f'data_{i}.pt'))
+    #     train_on_single_dataset(dataset, i)
+    start_training(dataset)
