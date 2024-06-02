@@ -1,3 +1,4 @@
+import gc
 import random
 from itertools import permutations
 from time import sleep
@@ -13,7 +14,6 @@ from tqdm import tqdm
 import model
 import os.path as osp
 import os
-import copy
 import numpy as np
 
 
@@ -66,6 +66,23 @@ def start_training(dataset):
     test_loader = DataLoader(test_sampler, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
     model_ = model.UTango(h_size=128, max_context=2, drop_out_rate=0.5, gcn_layers=3)
     train(epochs=1, trainLoader=train_loader, testLoader=test_loader, model=model_, learning_rate=1e-4)
+
+
+def train_on_single_dataset(dataset, i):
+    if i == 0:
+        model_ = model.UTango(h_size=128, max_context=2, drop_out_rate=0.5, gcn_layers=3)
+        previous_loss = torch.tensor(0.0, requires_grad=True, device='cuda' if torch.cuda.is_available() else 'cpu')
+        optimizer = torch.optim.Adam(model_.parameters(), lr=1e-4)
+    else:
+        checkpoint = torch.load(f"model/model_{i - 1}.pt")
+        model_ = model.UTango(h_size=128, max_context=2, drop_out_rate=0.5, gcn_layers=3)
+        model_.load_state_dict(checkpoint['model_state_dict'])
+        previous_loss = checkpoint['loss']
+        optimizer = torch.optim.Adam(model_.parameters(), lr=1e-4)
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    train_on_single(epochs=i, _data=dataset, model=model_,
+                    learning_rate=1e-4, previous_loss=previous_loss, optimizer=optimizer,
+                    criterion=nn.CrossEntropyLoss(), batch=i)
 
 
 def evaluate_metrics(model, test_loader):
@@ -206,10 +223,52 @@ def demo_work(dataset):
     print("Among the demo dataset, the results are shown above")
 
 
+def train_on_single(epochs, _data, model, learning_rate,
+                    previous_loss, optimizer, criterion, batch):
+    if not os.path.exists('model'):
+        os.makedirs('model')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+    model.train()  # 将模型设置为训练模式
+    _data = [item.to(device) if isinstance(item, Data) else item for item in _data]
+    total_loss = previous_loss
+    out = model(_data[:-1])
+    y_ = _data[-1]
+    loss = torch.tensor(0.0, device=device, requires_grad=True)
+    for (i, j) in zip(out, y_):
+        i = torch.tensor(i, dtype=torch.float, device=device)
+        j = torch.tensor(j, dtype=torch.float, device=device)
+        print("now", i, j)
+        loss += criterion(i, j)
+    total_loss = total_loss + loss
+    optimizer.zero_grad()
+    total_loss.backward()
+    optimizer.step()
+    torch.save({
+        'epoch': batch,
+        'model_state_dict': model.state_dict(),
+        'loss': total_loss,
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, os.path.join('model', f"model_{batch}.pt"))
+
+
+def demo_work(dataset):
+    model_ = torch.load("model.pt")
+    test_dataset = dataset
+    sleep(0.1)
+    evaluate_metrics(model=model_, test_loader=test_dataset)
+    print("Among the demo dataset, the results are shown above")
+
+
 if __name__ == '__main__':
     dataset = []
-    for i in range(2):
-        # Change based on your dataset size.
-        data = torch.load(osp.join(os.getcwd() + "/data/", 'data_{}.pt'.format(i)))
-        dataset.append(data)
-    start_training(dataset)
+    # for i in range(1):
+    #     # Change based on your dataset size.
+    #     data = torch.load(osp.join(os.getcwd() + "/data/", 'data_{}.pt'.format(i)))
+    #     dataset.append(data)
+    # 从data目录下读取所有数据点数
+    data_size = len(os.listdir(os.path.join(os.getcwd() + "/data/")))
+    for i in range(data_size):
+        dataset = torch.load(os.path.join(os.getcwd() + "/data/", f'data_{i}.pt'))
+        train_on_single_dataset(dataset, i)
+    # start_training(dataset)

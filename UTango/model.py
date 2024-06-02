@@ -23,7 +23,7 @@ class UTango(torch.nn.Module):
         for data in input_data:
             device = data.x.device
             node_features = data.x.to(device)
-            node_label = data.y[0]
+            node_label = data.y
             edge_info = data.edge_index.to(device)
 
             for i in range(self.gcn_layers - 1):
